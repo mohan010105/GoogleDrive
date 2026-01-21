@@ -1,0 +1,5 @@
+{
+  "name": "CloudDrive",
+  "description": "A comprehensive cloud-based media file storage service featuring secure authentication, role-based access control (User/Admin), folder management, file versioning, and sharing capabilities. Built with React, Tailwind CSS, and Supabase architecture.",
+  "requestFramePermissions": []
+}
