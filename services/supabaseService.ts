@@ -4,7 +4,7 @@
 */
 
 import { supabase } from './supabaseClient';
-import { FileData, ShareConfig, StoragePlan, UserProfile, UserSubscription, FileVersion, FolderVersion, UserRole } from '../types';
+import { AppFile, ShareConfig, StoragePlan, UserProfile, UserSubscription, FileVersion, FolderVersion, UserRole } from '../types';
 import { ADMIN_EMAIL } from '../constants';
 import { ADMIN_PASSWORD } from '../constants';
 
@@ -55,7 +55,7 @@ const defaultPlans: StoragePlan[] = [
 
 const initial = loadState() || { files: [] as FileData[], folders: [] as any[], versions: [] as FileVersion[], folderVersions: [] as FolderVersion[], shares: {} as Record<string, ShareConfig>, users: [defaultUser], plans: defaultPlans, subscriptions: {}, payments: [] as any[] };
 
-let FILES = initial.files as FileData[];
+let FILES = initial.files as AppFile[];
 let FOLDERS = initial.folders;
 let VERSIONS = initial.versions as FileVersion[];
 let FOLDER_VERSIONS = initial.folderVersions as FolderVersion[];
@@ -155,6 +155,70 @@ export const api = {
 
   // Auth helpers using local storage (anon key removed)
   loginUser: async (email: string, password: string) => {
+    // If Supabase client is configured, delegate auth to Supabase (single authoritative source)
+    if (supabase) {
+      console.log('[auth] loginUser -> using Supabase for auth', { email });
+      try {
+        const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+        console.log('[auth] supabase.signInWithPassword response', { data, error });
+
+        if (error) {
+          // If the provider failed due to invalid API key or misconfiguration,
+          // allow a safe fallback for the hardcoded local admin account only.
+          const msg = (error.message || '').toLowerCase();
+          if ((msg.includes('api key') || msg.includes('invalid') || msg.includes('unauthorized')) && email.toLowerCase() === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
+            console.warn('[auth] Supabase auth failed due to API key or config; falling back to local admin for development');
+            const localAdmin = USERS.find(u => u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+            if (localAdmin) {
+              localAdmin.last_login = new Date().toISOString();
+              try { localStorage.setItem('cloud_drive_current_user', JSON.stringify(localAdmin)); } catch (e) { /* ignore */ }
+              return localAdmin;
+            }
+          }
+
+          // Otherwise surface provider error so UI can present accurate guidance
+          throw new Error(error.message || 'Login failed');
+        }
+
+        const user = data.user;
+        const session = data.session;
+
+        if (!user) throw new Error('Login failed: no user returned');
+
+        // Persist a minimal, normalized current user for the app to consume
+        const normalized = { id: user.id, email: user.email || '', full_name: (user.user_metadata as any)?.full_name || '', role: user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() ? UserRole.ADMIN : UserRole.USER, created_at: user.created_at || new Date().toISOString(), last_login: new Date().toISOString() } as UserProfile;
+        try {
+          localStorage.setItem('cloud_drive_current_user', JSON.stringify(normalized));
+        } catch (e) {
+          console.warn('Failed to persist current user to localStorage', e);
+        }
+
+        // Also persist session for debug traceability
+        try {
+          localStorage.setItem('cloud_drive_session', JSON.stringify(session));
+        } catch (e) {
+          console.warn('Failed to persist session to localStorage', e);
+        }
+
+        // Return normalized user to callers
+        return normalized;
+      } catch (err: any) {
+        // Catch unexpected thrown errors from the client library and attempt same fallback
+        const emsg = (err?.message || '').toLowerCase();
+        if ((emsg.includes('api key') || emsg.includes('invalid') || emsg.includes('unauthorized')) && email.toLowerCase() === ADMIN_EMAIL.toLowerCase() && password === ADMIN_PASSWORD) {
+          console.warn('[auth] Supabase signIn threw; falling back to local admin for development', err);
+          const localAdmin = USERS.find(u => u.email.toLowerCase() === ADMIN_EMAIL.toLowerCase());
+          if (localAdmin) {
+            localAdmin.last_login = new Date().toISOString();
+            try { localStorage.setItem('cloud_drive_current_user', JSON.stringify(localAdmin)); } catch (e) { /* ignore */ }
+            return localAdmin;
+          }
+        }
+        throw err;
+      }
+    }
+
+    // Fallback: local mock auth (only used when Supabase is NOT configured)
     await delay(200); // Simulate async
 
     const user = USERS.find(u => u.email.toLowerCase() === email.toLowerCase() && u.password === password);
@@ -169,17 +233,57 @@ export const api = {
     user.last_login = new Date().toISOString();
     saveAll();
 
+    try {
+      localStorage.setItem('cloud_drive_current_user', JSON.stringify(user));
+    } catch (e) {
+      console.warn('Failed to persist mock current user', e);
+    }
+
     return user;
   },
 
   registerUser: async (email: string, password: string, fullName?: string) => {
+    // If Supabase client is configured, delegate signup to Supabase (single authoritative source)
+    if (supabase) {
+      console.log('[auth] registerUser -> using Supabase for signup', { email });
+      const { data, error } = await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName || '' } } });
+      console.log('[auth] supabase.signUp response', { data, error });
+
+      if (error) {
+        // If provider indicates user exists, surface that clearly
+        throw new Error(error.message || 'Signup failed');
+      }
+
+      // On successful signup, Supabase may require email confirmation depending on project settings.
+      // Normalize and persist a minimal user record if present.
+      const user = data.user;
+      const session = data.session;
+
+      if (user) {
+        const normalized = { id: user.id, email: user.email || '', full_name: (user.user_metadata as any)?.full_name || fullName || '', role: user.email?.toLowerCase() === ADMIN_EMAIL.toLowerCase() ? UserRole.ADMIN : UserRole.USER, created_at: user.created_at || new Date().toISOString(), last_login: new Date().toISOString() } as UserProfile;
+        try {
+          localStorage.setItem('cloud_drive_current_user', JSON.stringify(normalized));
+        } catch (e) {
+          console.warn('Failed to persist current user after signup', e);
+        }
+        try {
+          localStorage.setItem('cloud_drive_session', JSON.stringify(session));
+        } catch (e) {
+          console.warn('Failed to persist session after signup', e);
+        }
+      }
+
+      return;
+    }
+
+    // Fallback: local mock signup (only used when Supabase is NOT configured)
     await delay(200); // Simulate async
 
     // Check if user already exists
     const existingUser = USERS.find(u => u.email.toLowerCase() === email.toLowerCase());
     if (existingUser) throw new Error('User already exists');
 
-    // Create new user
+    // Create new user (mock)
     const newUser: UserProfile = {
       id: `u_${Date.now()}`,
       email: email.toLowerCase(),
@@ -196,6 +300,12 @@ export const api = {
     // Initialize free subscription
     SUBSCRIPTIONS[newUser.id] = { planId: 'free', billingCycle: 'monthly', startDate: new Date().toISOString(), isActive: true, storageUsed: 0 };
     saveAll();
+
+    try {
+      localStorage.setItem('cloud_drive_current_user', JSON.stringify(newUser));
+    } catch (e) {
+      console.warn('Failed to persist mock user after register', e);
+    }
 
     return;
   },
@@ -372,6 +482,11 @@ export const api = {
       throw new Error('Storage limit exceeded. Please upgrade your plan or delete files.');
     }
 
+    // STEP 2: FIX FILE CREATION AT UPLOAD TIME - IMMEDIATELY STORE FILE DATA
+    // REQUIRED RULE: Preview & download must NEVER depend on future async logic
+    const objectUrl = URL.createObjectURL(file);
+    console.log('Created object URL for immediate file access:', objectUrl);
+
     // If Supabase is not configured, fall back to mock implementation
     if (!supabase) {
       console.log('Supabase not configured, using mock upload');
@@ -397,6 +512,8 @@ export const api = {
 
       if (uploadError) {
         console.error('Storage upload error:', uploadError);
+        // Clean up object URL on failure
+        URL.revokeObjectURL(objectUrl);
         throw new Error(`Upload failed: ${uploadError.message}`);
       }
 
@@ -431,8 +548,9 @@ export const api = {
 
       if (dbError) {
         console.error('Database insert error:', dbError);
-        // Try to clean up the uploaded file
+        // Clean up on failure
         await supabase.storage.from('cloud-drive').remove([storagePath]);
+        URL.revokeObjectURL(objectUrl);
         throw new Error(`Database error: ${dbError.message}`);
       }
 
@@ -460,18 +578,27 @@ export const api = {
       SUBSCRIPTIONS[userId] = { ...sub, storageUsed: (sub.storageUsed || 0) + size };
       saveAll();
 
-      // For mock compatibility, also store in local FILES array
-      const mockFile = { ...dbData, previewUrl: '' } as FileData;
-      FILES.push(mockFile);
+      // STEP 2 CONTINUED: Return AppFile with immediate access data sources
+      const uploadedFile = {
+        ...dbData,
+        file: file, // Original File object for immediate access
+        blob: undefined, // Not needed since we have File
+        url: objectUrl // Object URL for preview/download
+      } as AppFile;
 
-      broadcast('INSERT', 'files', mockFile);
+      // For mock compatibility, also store in local FILES array
+      FILES.push(uploadedFile);
+
+      broadcast('INSERT', 'files', uploadedFile);
       broadcast('UPDATE', 'subscriptions', { userId, storageUsed: SUBSCRIPTIONS[userId].storageUsed });
 
-      console.log('Real upload completed successfully');
-      return mockFile;
+      console.log('Real upload completed successfully with immediate file access');
+      return uploadedFile;
 
     } catch (error) {
       console.error('Real upload failed, falling back to mock:', error);
+      // Clean up object URL on failure
+      URL.revokeObjectURL(objectUrl);
       // Fall back to mock implementation on error
       return uploadFileMock(userId, file, folderId);
     }
@@ -482,28 +609,40 @@ export const api = {
     console.log('Using mock upload implementation');
 
     const size = file.size;
-    let previewData: string | null = null;
 
-    // Try to read the file as Data URL so previews persist across reloads in the mock DB
-    try {
-      if (typeof FileReader !== 'undefined' && file instanceof Blob) {
-        previewData = await new Promise<string>((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve(reader.result as string);
-          reader.onerror = (e) => reject(e);
-          reader.readAsDataURL(file);
-        });
-      }
-    } catch (e) {
-      // ignore - fallback to object URL below
-      previewData = null;
-    }
+    // STEP 2: FIX FILE CREATION AT UPLOAD TIME - IMMEDIATELY STORE FILE DATA
+    // REQUIRED RULE: Preview & download must NEVER depend on future async logic
+    const objectUrl = URL.createObjectURL(file);
+    console.log('Created object URL for immediate file access:', objectUrl);
 
-    const objUrl = typeof URL !== 'undefined' && (URL as any).createObjectURL ? URL.createObjectURL(file as any) : null;
     const extMatch = /\.([0-9a-zA-Z]+)$/.exec(file.name);
     const ext = extMatch ? extMatch[1].toLowerCase() : '';
-    const f = { id: `file_${Date.now()}`, name: file.name, folder_id: folderId, owner_id: userId, storage_path: `uploads/${userId}/${file.name}`, mime_type: file.type || 'application/octet-stream', file_extension: ext, size, is_starred: false, is_trashed: false, current_version: 1, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_accessed: new Date().toISOString(), previewUrl: previewData || objUrl || '' } as FileData;
-    FILES.push(f);
+
+    const f = {
+      id: `file_${Date.now()}`,
+      name: file.name,
+      folder_id: folderId,
+      owner_id: userId,
+      storage_path: `uploads/${userId}/${file.name}`,
+      mime_type: file.type || 'application/octet-stream',
+      file_extension: ext,
+      size,
+      is_starred: false,
+      is_trashed: false,
+      current_version: 1,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+      last_accessed: new Date().toISOString()
+    } as FileData;
+
+    // STEP 2 CONTINUED: Return file with immediate access URL
+    const uploadedFile = {
+      ...f,
+      url: objectUrl, // IMMEDIATE ACCESS URL - NO FUTURE ASYNC DEPENDENCY
+      file: file // Keep original File object for text reading
+    } as FileData;
+
+    FILES.push(uploadedFile);
     VERSIONS.push({ id: `v_${Date.now()}`, file_id: f.id, version_number: 1, size: f.size, created_at: new Date().toISOString(), storage_path: f.storage_path });
 
     // Update stored usage
@@ -511,24 +650,24 @@ export const api = {
     SUBSCRIPTIONS[userId] = { ...sub, storageUsed: (sub.storageUsed || 0) + size };
     saveAll();
 
-    broadcast('INSERT', 'files', f);
+    broadcast('INSERT', 'files', uploadedFile);
     broadcast('UPDATE', 'subscriptions', { userId, storageUsed: SUBSCRIPTIONS[userId].storageUsed });
 
-    console.log('Mock upload completed successfully');
-    return f;
+    console.log('Mock upload completed successfully with immediate file access');
+    return uploadedFile;
   },
 
   markAccessed: async (id: string) => {
     const now = new Date().toISOString();
     let found = false;
-    FILES = FILES.map((f) => (f.id === id ? ({ ...f, last_accessed: now } as FileData) : f));
+    FILES = FILES.map((f) => (f.id === id ? ({ ...f, last_accessed: now } as AppFile) : f));
     FOLDERS = FOLDERS.map((d: any) => (d.id === id ? { ...d, last_accessed: now } : d));
     saveAll();
     broadcast('UPDATE', 'files', { id, last_accessed: now });
   },
 
   deleteFile: async (id: string) => {
-    FILES = FILES.map((f) => (f.id === id ? { ...f, is_trashed: true } : f));
+    FILES = FILES.map((f) => (f.id === id ? { ...f, is_trashed: true } as AppFile : f));
     saveAll();
     broadcast('DELETE', 'files', { id });
   },
@@ -540,7 +679,7 @@ export const api = {
   },
 
   restoreFile: async (id: string) => {
-    FILES = FILES.map((f) => (f.id === id ? { ...f, is_trashed: false } : f));
+    FILES = FILES.map((f) => (f.id === id ? { ...f, is_trashed: false } as AppFile : f));
     saveAll();
     broadcast('UPDATE', 'files', { id, is_trashed: false });
   },
