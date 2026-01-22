@@ -16,6 +16,27 @@ export interface UserProfile {
   last_login?: string;
 }
 
+// STRICT FILE MODEL - MANDATORY FOR ALL FILE OPERATIONS
+export type AppFile = {
+  id: string;
+  name: string;
+  folder_id: string | null;
+  owner_id: string;
+  storage_path: string;
+  mime_type: string;
+  file_extension?: string;
+  size: number;
+  is_starred: boolean;
+  is_trashed: boolean;
+  current_version: number;
+  created_at: string;
+  updated_at: string;
+  last_accessed?: string;
+  // FILE DATA SOURCE - SINGLE SOURCE OF TRUTH
+  file: File;        // browser File object - always present
+};
+
+// LEGACY TYPE - DEPRECATED, USE AppFile INSTEAD
 export interface FileData {
   id: string;
   name: string;
@@ -32,6 +53,7 @@ export interface FileData {
   updated_at: string;
   last_accessed?: string;
   previewUrl?: string; // Added for viewing actual uploaded content
+  file?: File; // Store the actual File object for frontend-only operations
 }
 
 export interface FolderData {
@@ -189,6 +211,11 @@ export interface PasswordResetSession {
   expiresAt: string;
   createdAt: string;
 }
+
+// STEP 1: SINGLE SOURCE OF TRUTH - MANDATORY FOR ALL FILE OPERATIONS
+// The only valid file object is the browser File object from <input type="file">.
+// Everything else is invalid and must be removed.
+type ActiveFile = File | null;
 
 // Payment Flow Types
 export type PaymentStatus = 'idle' | 'creating_intent' | 'processing' | 'verifying' | 'completed' | 'failed' | 'cancelled';

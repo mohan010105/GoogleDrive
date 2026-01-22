@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { supabase } from "../services/supabaseClient";
+import { api } from "../services/supabaseService";
 
 export default function Login() {
   const [email, setEmail] = useState("");
@@ -8,20 +8,16 @@ export default function Login() {
   const navigate = useNavigate();
 
   const handleLogin = async () => {
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    try {
+      const user = await api.loginUser(email, password);
 
-    if (error) {
+      if (user.email === "mohanrajit05@gmail.com") {
+        navigate("/admin");
+      } else {
+        navigate("/dashboard");
+      }
+    } catch (error) {
       alert(error.message);
-      return;
-    }
-
-    if (data.user.email === "mohanrajit05@gmail.com") {
-      navigate("/admin");
-    } else {
-      navigate("/dashboard");
     }
   };
 

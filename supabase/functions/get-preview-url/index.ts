@@ -92,12 +92,12 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: 'Access denied' }), { status: 403, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })
     }
 
-    // Generate signed URL for preview (60 seconds expiry) using service client
+    // Generate signed URL for preview (300 seconds expiry) using service client
     const bucket = Deno.env.get('SUPABASE_STORAGE_BUCKET') ?? 'cloud-drive'
     const { data: signedUrlData, error: signedUrlError } = await svcClient
       .storage
       .from(bucket)
-      .createSignedUrl(file.storage_path, 60)
+      .createSignedUrl(file.storage_path, 300)
 
     if (signedUrlError || !signedUrlData) {
       return new Response(JSON.stringify({ error: 'Failed to generate preview URL' }), { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } })

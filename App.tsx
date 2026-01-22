@@ -16,7 +16,7 @@ import ToastContainer, { ToastMessage } from './components/Toast';
 import { PaymentProvider } from './components/PaymentContext';
 import { api } from './services/supabaseService';
 import { supabase } from './services/supabaseClient';
-import { UserRole, FileData, FolderData, Breadcrumb, UserProfile, StoragePlan } from './types';
+import { UserRole, AppFile, FolderData, Breadcrumb, UserProfile, StoragePlan } from './types';
 import { ArrowLeft, User, Lock, Mail, Cloud, Eye, EyeOff, Check, X, AlertCircle, ExternalLink, ShieldCheck } from 'lucide-react';
 
 const PasswordRule = ({ label, met }: { label: string; met: boolean }) => (
@@ -49,16 +49,21 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
   const [breadcrumbs, setBreadcrumbs] = useState<Breadcrumb[]>([{ id: null, name: 'My Drive' }]);
   
   // --- Data State ---
-  const [files, setFiles] = useState<FileData[]>([]);
+  const [files, setFiles] = useState<AppFile[]>([]);
   const [folders, setFolders] = useState<FolderData[]>([]);
   const [loading, setLoading] = useState(false);
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [pendingShareId, setPendingShareId] = useState<string | null>(null);
 
+  // --- STEP 2: CAPTURE FILE CORRECTLY (CRITICAL) ---
+  // Replace your file click logic with this exact behavior
+  const [activeFile, setActiveFile] = useState<AppFile | null>(null);
+
+
+
   // --- Modal States ---
   const [isFolderModalOpen, setIsFolderModalOpen] = useState(false);
-  const [previewFile, setPreviewFile] = useState<FileData | null>(null);
   const [shareItem, setShareItem] = useState<{ id: string, name: string, type: 'file' | 'folder' } | null>(null);
   const [historyFolder, setHistoryFolder] = useState<FolderData | null>(null);
   const [upgradeModal, setUpgradeModal] = useState<{ isOpen: boolean, currentPlan: any, targetPlan: any, billingCycle: 'monthly' | 'annual' } | null>(null);
@@ -119,7 +124,9 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
   // 3. Normal Data Fetching
   useEffect(() => {
     if (isAuthenticated && currentUser) {
-      fetchContent();
+      (async () => {
+        await fetchContent();
+      })();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isAuthenticated, currentUser, currentFolderId, currentPath]);
@@ -213,8 +220,8 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
         // A. Try as File
         const file = await api.getFileById(shareId);
         if (file) {
-          setPreviewFile(file);
-          api.markAccessed(file.id); // Track activity
+          // Use the same file click logic for shared files
+          handleFileClick(file);
           showToast(`Opened shared file: ${file.name}`, 'success');
           itemFound = true;
         } else {
@@ -284,12 +291,13 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
          setFiles(res.files);
          setFolders(res.folders);
       } else {
-        const isTrash = currentPath === 'trash';
-        
+         const isTrash = currentPath === 'trash';
+
         if (currentPath === 'starred') {
            // Client side filter for starred
-           const allFiles = await api.getFiles(currentUser.id, null, false); 
-           setFiles(allFiles.filter(f => f.is_starred));
+           const allFiles = await api.getFiles(currentUser.id, null, false);
+           const starredFiles = allFiles.filter(f => f.is_starred);
+           setFiles(starredFiles);
            setFolders([]);
         } else if (currentPath === 'recent') {
            // Fetch recently accessed
@@ -299,8 +307,9 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
            setFolders(recentFolders);
         } else {
            // Normal Drive View
-           const fetchedFiles = await api.getFiles(currentUser.id, currentFolderId, isTrash);
+         const fetchedFiles = await api.getFiles(currentUser.id, currentFolderId, isTrash);
            const fetchedFolders = await api.getFolders(currentUser.id, currentFolderId, isTrash);
+           // Files already have File objects from memory storage
            setFiles(fetchedFiles);
            setFolders(fetchedFolders);
         }
@@ -444,8 +453,21 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
-    // The auth state change listener will handle the UI updates
+    try {
+      if (supabase && supabase.auth && typeof supabase.auth.signOut === 'function') {
+        await supabase.auth.signOut();
+      }
+    } catch (e) {
+      console.warn('Supabase signOut failed or supabase not configured', e);
+    }
+
+    // Clear local session and update UI state deterministically
+    try { localStorage.removeItem('cloud_drive_current_user'); } catch (e) { /* ignore */ }
+    try { localStorage.removeItem('cloud_drive_session'); } catch (e) { /* ignore */ }
+    setCurrentUser(null);
+    setIsAuthenticated(false);
+    setCurrentPath('login');
+    setAuthMode('login');
   };
 
   // --- Action Handlers (Real-Time Simulation) ---
@@ -480,17 +502,28 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
     }
   };
   
-  const handleFileClick = (file: FileData) => {
-    api.markAccessed(file.id);
-    // Open preview modal immediately; modal will fetch preview URL if needed
-    setPreviewFile(file);
-    api.getPreviewUrl(file.id)
-      .then((url) => {
-        setPreviewFile((prev) => (prev && prev.id === file.id ? ({ ...prev, previewUrl: url } as FileData) : prev));
-      })
-      .catch((err) => {
-        console.error('Failed to get preview URL', err);
-      });
+  const handleFileClick = async (file: AppFile) => {
+    // HARD-GUARD: Validate file before processing
+    if (!file || !file.id || !file.name || !file.file) {
+      console.error('Invalid file clicked:', file);
+      showToast('Invalid file data', 'error');
+      return;
+    }
+
+    try {
+      api.markAccessed(file.id);
+
+      // STEP 2: Use AppFile directly - it has the File object as single source of truth
+      console.log('File clicked:', file.name, 'File object available:', !!file.file);
+
+      // Set activeFile for preview/download using browser-native APIs
+      setActiveFile(file);
+      console.log('Active file set successfully:', file.name, file.size, file.mime_type);
+
+    } catch (error) {
+      console.error('Error in handleFileClick:', error);
+      showToast('Failed to open file preview', 'error');
+    }
   };
 
   const handleBreadcrumbClick = (index: number) => {
@@ -518,7 +551,8 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
 
     try {
       console.log('Calling api.uploadFile...');
-      await api.uploadFile(currentUser.id, file, currentFolderId);
+      const uploadedFileData = await api.uploadFile(currentUser.id, file, currentFolderId);
+
       console.log('Upload completed successfully');
       setUploadProgress(100);
       showToast(`Successfully uploaded ${file.name}`, 'success');
@@ -532,16 +566,20 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
       }, 500);
     } catch (err) {
       console.error('Upload failed:', err);
-      clearInterval(interval);
-      setUploadProgress(null);
       showToast(`Failed to upload ${file.name}`, 'error');
+    } finally {
+      // Ensure the progress interval is always cleared to avoid UI stuck state
+      try { clearInterval(interval); } catch (e) { /* ignore */ }
+      // If uploadProgress hasn't been reset, clear it
+      setTimeout(() => setUploadProgress(null), 500);
     }
   };
 
   const handleDeleteFile = async (id: string) => {
     try {
       await api.deleteFile(id);
-      if (previewFile?.id === id) setPreviewFile(null);
+      // Close preview modal if the deleted file is currently being previewed
+      if (activeFile && activeFile.name === id) setActiveFile(null);
       showToast("File moved to trash", 'success');
     } catch (err) {
        showToast("Failed to delete file", 'error');
@@ -925,6 +963,7 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
         uploadProgress={uploadProgress}
         onUpgradeClick={handleUpgradeClick}
         upgradeLoading={upgradeLoading}
+        onFileSelect={setActiveFile}
       >
       {/* Breadcrumbs */}
       {currentPath === 'drive' && !loading && (
@@ -982,11 +1021,10 @@ const AppContent: React.FC<{ navigate: (path: string) => void }> = ({ navigate }
       )}
 
       {/* Modals */}
-      {previewFile && (
-        <FilePreviewModal 
-          file={previewFile} 
-          onClose={() => setPreviewFile(null)} 
-          onShare={(file) => { setPreviewFile(null); setShareItem({ id: file.id, name: file.name, type: 'file' }); }}
+      {activeFile && (
+        <FilePreviewModal
+          activeFile={activeFile}
+          onClose={() => setActiveFile(null)}
         />
       )}
 

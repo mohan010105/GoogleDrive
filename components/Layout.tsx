@@ -5,7 +5,7 @@ import {
   Upload, User as UserIcon, Search, Cloud, CheckCircle, Clock, Plus,
   ChevronDown, FileUp, FolderPlus
 } from './Icons';
-import { UserRole, UserProfile } from '../types';
+import { UserRole, UserProfile, AppFile } from '../types';
 import CurrentPlan from './CurrentPlan';
 
 interface LayoutProps {
@@ -20,10 +20,11 @@ interface LayoutProps {
   uploadProgress?: number | null;
   onUpgradeClick: (planId?: string, billing?: 'monthly' | 'annual') => void;
   upgradeLoading?: boolean;
+  onFileSelect: (file: AppFile | null) => void;
 }
 
 const Layout: React.FC<LayoutProps> = ({
-  children, user, currentPath, onNavigate, onLogout, onUpload, onCreateFolder, onSearch, uploadProgress, onUpgradeClick, upgradeLoading
+  children, user, currentPath, onNavigate, onLogout, onUpload, onCreateFolder, onSearch, uploadProgress, onUpgradeClick, upgradeLoading, onFileSelect
 }) => {
   const [dragActive, setDragActive] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -138,13 +139,16 @@ const Layout: React.FC<LayoutProps> = ({
               id="file-upload"
               className="hidden"
               onChange={(e) => {
-                console.log('File input changed:', e.target.files);
                 if (e.target.files && e.target.files[0]) {
-                  console.log('Uploading file:', e.target.files[0].name, e.target.files[0].size, e.target.files[0].type);
-                  onUpload(e.target.files[0]);
+                  const file = e.target.files[0];
+                  console.log('File selected:', file.name, file.size, file.type);
+                  // STEP 2: Set activeFile for preview/download
+                  onFileSelect(file);
+                  // Keep upload functionality
+                  onUpload(file);
                   e.target.value = '';
                 } else {
-                  console.log('No file selected');
+                  onFileSelect(null);
                 }
               }}
             />

@@ -7,7 +7,7 @@ import {
   ChevronDown, ArrowUp, ArrowDown, Upload, Cloud, Search, X, CheckCircle, Plus, Clock, Filter, AlertCircle,
   Grid, List
 } from './Icons';
-import { FileData, FolderData } from '../types';
+import { AppFile, FolderData } from '../types';
 import Modal from './Modal';
 import { api } from '../services/supabaseService';
 
@@ -52,19 +52,19 @@ type SortDirection = 'asc' | 'desc';
 type FilterType = 'all' | 'folders' | 'files';
 
 interface FileBrowserProps {
-  files: FileData[];
+  files: AppFile[];
   folders: FolderData[];
   viewMode: 'grid' | 'list';
   userId: string;
   currentFolderId: string | null;
   onFolderClick: (folderId: string) => void;
-  onFileClick: (file: FileData) => void;
+  onFileClick: (file: AppFile) => void;
   onDeleteFile: (id: string) => void;
   onDeleteFolder?: (id: string) => void;
   onRestoreFile: (id: string) => void;
   onRestoreFolder?: (id: string) => void;
   onToggleStar: (id: string) => void;
-  onShare: (file: FileData) => void;
+  onShare: (file: AppFile) => void;
   onShareFolder?: (folder: FolderData) => void;
   onFolderHistory?: (folder: FolderData) => void;
   onUpdateFolderColor?: (folderId: string, color: string) => void;
@@ -100,6 +100,59 @@ const FileBrowser: React.FC<FileBrowserProps> = ({
     setActiveMenuId(null);
     setFilterQuery(''); 
   }, [files, folders]);
+
+  // --- Stable object URLs for image previews
+  const [imageUrls, setImageUrls] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    const prev = imageUrls;
+    const next: Record<string, string> = {};
+    const toRevoke: string[] = [];
+
+    // Create object URLs for files that provide a File object and are images
+    files.forEach((f) => {
+      if (f.mime_type && f.mime_type.startsWith('image/')) {
+        if (f.url) {
+          next[f.id] = f.url;
+        } else if (f.file) {
+          // Reuse existing URL if present
+          if (prev[f.id]) {
+            next[f.id] = prev[f.id];
+          } else {
+            try {
+              next[f.id] = URL.createObjectURL(f.file as File);
+            } catch (e) {
+              console.error('Failed to create object URL for file', f.name, e);
+            }
+          }
+        }
+      }
+    });
+
+    // Determine which previous URLs to revoke
+    Object.keys(prev).forEach((id) => {
+      if (!next[id]) {
+        toRevoke.push(prev[id]);
+      }
+    });
+
+    // Update state
+    setImageUrls(next);
+
+    // Revoke outdated URLs
+    toRevoke.forEach((u) => {
+      try { URL.revokeObjectURL(u); } catch (e) { /* ignore */ }
+    });
+
+    // Cleanup on unmount: revoke all created URLs
+    return () => {
+      Object.values(next).forEach((u) => {
+        // Only revoke blob: URLs (start with blob:)
+        try { if (u && u.startsWith('blob:')) URL.revokeObjectURL(u); } catch (e) { /* ignore */ }
+      });
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [files]);
 
   // Click outside to close active menus
   useEffect(() => {
@@ -606,11 +659,15 @@ const FileBrowser: React.FC<FileBrowserProps> = ({
                   >
                     {/* Preview Area */}
                     <div className="h-36 bg-gray-50 flex items-center justify-center relative overflow-hidden">
-                         {file.mime_type && file.mime_type.startsWith('image/') ? (
+                         {file.mime_type && file.mime_type.startsWith('image/') && file.file ? (
                            <img
-                            src={file.previewUrl || `https://picsum.photos/400/300?random=${file.id}`}
+                            src={imageUrls[file.id] || ''}
                             alt={file.name}
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                            onError={() => {
+                              // Fallback to icon if image fails to load
+                              console.error('Failed to load image preview for:', file.name);
+                            }}
                            />
                          ) : (
                           <div className="transform scale-150 opacity-60 group-hover:scale-160 group-hover:opacity-80 transition-all duration-200">
